@@ -30,7 +30,7 @@ class ShortenActor extends Actor with ShortenSrv {
   def actorRefFactory = context
 
   val secret = Settings(context.system).secret
-  DBsWithEnv("test").setupAll()
+  DBsWithEnv("development").setupAll()
   // this actor only runs our route, but you could add
   // other things here, like request stream processing
   // or timeout handling
