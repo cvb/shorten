@@ -91,6 +91,18 @@ object Click extends SQLSyntaxSupport[Click]{
       .map(_.long("count")).single.apply().getOrElse(0)
   }
 
+  def clicksForCode(code: String, usr: User, lim: Int, off: Int)
+                   (implicit s: DBSession = AutoSession) = {
+    val c = Click.syntax("c")
+    val l = Link.syntax("l")
+    sql"""select ${c.result.*} from ${Click.as(c)}
+            join ${Link.as(l)} on ${l.id} = ${c.linkId}
+            where ${l.userId} = ${usr.id} and ${l.code} = $code
+       """
+      .map(Click(c.resultName)).list.apply()
+  }
+
+
   def createForLink(linkId: Long, ref: String, remIp: String)
     (implicit s: DBSession = AutoSession): Long = {
     sql"""insert into clicks (referer, remote_ip, link_id)

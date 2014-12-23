@@ -92,99 +92,88 @@ trait ShortenSrv extends HttpService with SprayJsonSupport {
 
   val limOff = parameters('limit.as[Int] ? 10, 'offset.as[Int] ? 0)
 
-  val myRoute = { secret: String =>
-    path("login") {
-      get {
-        parameters('user_id.as[Int], 'secret.as[String]) { (userId, s) =>
-          authenticate(SecretAuth(secret, s, userId)) { user =>
-            complete(user.token)
-          }
-        }
+  def authUser(secret: String) =
+    parameters('user_id.as[Int], 'secret.as[String]) { (userId, s) =>
+      authenticate(SecretAuth(secret, s, userId)) { user =>
+        complete(user.token)
       }
+    }
+
+  val extractNewLinkParams =
+    formFields('url, 'code.as[Option[String]], 'folder_id.as[Option[Long]])
+
+  def createNewLink( usr: User
+                   , url: String
+                   , code: Option[String]
+                   , fldId: Option[Long]) =
+    (code, Link.createNew(usr.id, url, code, fldId)) match {
+      // Built successfully
+      case (_, Some(lnk)) =>
+        complete(lnk)
+      // Get uniq code violation with user code
+      case (Some(code), None) =>
+        complete(Conflict)
+      // Can't make code recursively, too many collisions
+      case (None, None) =>
+        complete(InternalServerError, "Can't create link")
+    }
+
+  def findLinkByCode(code: String) =
+    Link.findByCode(code) match {
+      case None    => complete(NotFound)
+      case Some(l) => complete(LinkWithClicks(l, Click.clicksCount(l.id)))
+    }
+
+  def resolveCode(code: String)(referer: String, ip: String) =
+    Link.findByCode(code) match {
+      case None    => complete(NotFound)
+      case Some(l) =>
+        Click.createForLink(l.id, referer, ip)
+        complete(l)
+    }
+
+  val myRoute = { secret: String =>
+    path("login") { get { authUser(secret) }
     } ~
     path("link") {
       get {
-        checkToken { _ =>
-          limOff { (lim, off) =>
-            complete(Link.getAll(lim, off))
-          }
+        (checkToken & limOff) { (_: User, lim, off) =>
+          complete(Link.getAll(lim, off))
         }
       } ~
       post {
-        formFields('url, 'code.as[Option[String]], 'folder_id.as[Option[Long]]) {
-          (u, c, f) =>
-          checkToken { usr =>
-            (c, Link.createNew(usr.id, u, c, f)) match {
-              // Built successfully
-              case (_, Some(lnk)) =>
-                complete(lnk)
-              // Get uniq code violation with user code
-              case (Some(code), None) =>
-                complete(Conflict)
-              // Can't make code recursively, too many collisions
-              case (None, None) =>
-                complete(InternalServerError, "Can't create link")
-            }
-          }
-        }
+        (checkToken & extractNewLinkParams)(createNewLink)
       }
     } ~
     path("link" / Segment) { code =>
       get {
-        checkToken { usr =>
-          Link.findByCode(code) match {
-            case None    => complete(NotFound)
-            case Some(l) => complete(LinkWithClicks(l, Click.clicksCount(l.id)))
-          }
-        }
+        checkToken { _ => findLinkByCode(code) }
       } ~
       post {
-        formFields('referer, 'remote_ip) { (ref, ip) =>
-          Link.findByCode(code) match {
-            case None    => complete(NotFound)
-            case Some(l) =>
-              Click.createForLink(l.id, ref, ip)
-              complete(l)
-          }
-        }
+        formFields('referer, 'remote_ip)(resolveCode(code))
       }
     } ~
     path("link" / Segment / "clicks") { code =>
       get {
-        checkToken { usr =>
-          limOff { (lim, off) =>
-            val c = Click.syntax("c")
-            val l = Link.syntax("l")
-            implicit val s: DBSession = AutoSession
-            val res =
-              sql"""select ${c.result.*} from ${Click.as(c)}
-                  join ${Link.as(l)} on ${l.id} = ${c.linkId}
-                  where ${l.userId} = ${usr.id} and ${l.code} = $code
-               """
-                .map(Click(c.resultName)).list.apply()
-            complete(res)
-          }
+        (checkToken & limOff) { (usr, lim, off) =>
+          complete(Click.clicksForCode(code, usr, lim, off))
         }
       }
     }~
     path("folder") {
       get {
-        checkToken { usr =>
-          limOff { (lim, off) =>
-            complete(Folder.findByUser(usr.id, lim, off))
-          }
+        (checkToken & limOff) { (usr, lim, off) =>
+          complete(Folder.findByUser(usr.id, lim, off))
         }
       }
     } ~
     path("folder" / IntNumber) { id =>
       get {
-        checkToken { usr =>
+        (checkToken & limOff) { (usr, lim, off) =>
           Folder.findById(id) match {
             // check that requested folder belongs to authed user
             case Some(f) if f.userId == usr.id =>
-              limOff { (lim, off) =>
-                complete(Link.findByFolder(id, lim, off))
-              }
+              complete(Link.findByFolder(id, lim, off))
             case _ => complete(Forbidden)
           }
         }
