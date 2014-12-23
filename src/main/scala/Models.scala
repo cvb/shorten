@@ -8,9 +8,9 @@ import org.postgresql.util.PSQLException
 
 case class User(id: Int, token: String)
 
-object User extends SQLSyntaxSupport[User] with RecRunner {
+object User extends SQLConstruct[User] with RecRunner {
   override val tableName = "users"
-  def apply(rs: WrappedResultSet, rn: ResultName[User]): User =
+  def apply(rn: ResultName[User])(rs: WrappedResultSet): User =
     autoConstruct(rs, rn)
 
   def createNew()(implicit s: DBSession = AutoSession): User = {
@@ -19,40 +19,21 @@ object User extends SQLSyntaxSupport[User] with RecRunner {
               (${Random.alphanumeric.take(50).mkString}) """)
       .flatMap(findById(_)).get
   }
-
-  def findById(id: Long)(implicit s: DBSession = AutoSession) = {
-    sql""" select * from users where id = ${id} """
-      .map(rs => User(rs.int("id"), rs.string("token")))
-      .single.apply()
-  }
-
   def findByToken(token: String)(implicit s: DBSession = AutoSession) = {
-    sql""" select * from users where token = ${token} """
-      .map(rs => User(rs.int("id"), rs.string("token")))
-      .single.apply()
+    Helper.findOne(User, sqls" token = ${token} ")
   }
 
 }
 
 case class Folder(id: Int, title: String, userId: Int, user: Option[User] = None)
-object Folder extends SQLSyntaxSupport[Folder]{
+object Folder extends SQLConstruct[Folder]{
   override val tableName = "folders"
   def apply(rn: ResultName[Folder])(rs: WrappedResultSet): Folder =
     autoConstruct(rs, rn, "user")
 
-  def findById(id: Long)(implicit s: DBSession = AutoSession) = {
-    val c = Folder.syntax("link")
-    sql"select ${c.result.*} from ${Folder.as(c)} where id = ${id}"
-      .map(Folder(c.resultName)).single.apply()
-  }
-
   def findByUser(userId: Long, lim: Int, off: Int)
     (implicit s: DBSession = AutoSession) = {
-    val c = Folder.syntax("folder")
-    sql"""select ${c.result.*} from ${Folder.as(c)}
-            where user_id = ${userId}
-            limit $lim offset $off"""
-      .map(Folder(c.resultName)).list.apply()
+    Helper.findMany(Folder, Some(sqls"user_id = ${userId}"), lim, off)
   }
 
 }
@@ -63,30 +44,18 @@ case class Link(id: Int, url: String, code: String,
                 user: Option[User] = None,
                 folder: Option[Option[Folder]] = None)
 
-object Link extends SQLSyntaxSupport[Link] with RecRunner{
+object Link extends SQLConstruct[Link] with RecRunner{
   override val tableName = "links"
   def apply(rn: ResultName[Link])(rs: WrappedResultSet): Link =
     autoConstruct(rs, rn, "user", "folder")
 
-  def findById(id: Long)(implicit s: DBSession = AutoSession) = {
-    val c = Link.syntax("link")
-    sql"select ${c.result.*} from ${Link.as(c)} where id = ${id}"
-      .map(Link(c.resultName)).single.apply()
-  }
-
   def findByCode(code: String)(implicit s: DBSession = AutoSession) = {
-    val c = Link.syntax("link")
-    sql"select ${c.result.*} from ${Link.as(c)} where code = ${code}"
-      .map(Link(c.resultName)).single.apply()
+    Helper.findOne(Link, sqls"code = ${code}")
   }
 
   def findByFolder(folderId: Long, lim: Int, off: Int)
     (implicit s: DBSession = AutoSession) = {
-    val c = Link.syntax("link")
-    sql"""select ${c.result.*} from ${Link.as(c)}
-            where folder_id = ${folderId}
-            limit $lim offset $off"""
-      .map(Link(c.resultName)).list.apply()
+    Helper.findMany(Link, Some(sqls"folder_id = ${folderId}"), lim, off)
   }
 
   def createNew(
@@ -106,9 +75,7 @@ object Link extends SQLSyntaxSupport[Link] with RecRunner{
   }
 
   def getAll(limit: Int, offset: Int)(implicit s: DBSession = AutoSession) = {
-    val c = Link.syntax("link")
-    sql"select ${c.result.*} from ${Link.as(c)} limit ${limit} offset ${offset}"
-      .map(Link(c.resultName)).list.apply()
+    Helper.findMany(Link, None, limit, offset)
   }
 }
 
@@ -142,5 +109,36 @@ trait RecRunner {
       // http://www.postgresql.org/docs/9.3/static/errcodes-appendix.html
       case e: PSQLException if(e.getSQLState == "23505")  =>
         if (n > 0) createNewRec(n-1, r) else None
+  }
+}
+
+trait SQLConstruct[T] extends SQLSyntaxSupport[T] {
+  def apply(rn: ResultName[T])(rs: WrappedResultSet): T
+
+  def findById(id: Long): Option[T] = {
+    Helper.findOne(this, sqls" id = ${id} ")
+  }
+}
+
+object Helper {
+
+  def findOne[T](model: SQLConstruct[T], whereSyntax: SQLSyntax)
+    (implicit s: DBSession = AutoSession): Option[T] = {
+    val m = model.syntax("model")
+    sql"select ${m.result.*} from ${model.as(m)} where ${whereSyntax} limit 1"
+      .map(model(m.resultName)).single.apply()
+  }
+
+  def findMany[T](model: SQLConstruct[T], whereSyntax: Option[SQLSyntax],
+    limit: Int = 1000, offset: Int = 0)
+    (implicit s: DBSession = AutoSession): List[T] = {
+    val m = model.syntax("model")
+    val whereClause = whereSyntax.map(w => sqls""" where $w """)
+      .getOrElse(sqls"")
+    sql"""select ${m.result.*} from ${model.as(m)}
+            ${ whereClause }
+            limit ${limit} offset ${offset}
+       """
+      .map(model(m.resultName)).list.apply()
   }
 }
