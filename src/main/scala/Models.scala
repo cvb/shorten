@@ -94,7 +94,7 @@ object Link extends SQLSyntaxSupport[Link] with RecRunner{
     (implicit s: DBSession = AutoSession) = code match {
 
     case None => createNewRec(5, () => {
-      val randStr = Random.alphanumeric.take(50).mkString
+      val randStr = Random.alphanumeric.take(5).mkString
       sql"""insert into links (user_id, url, folder_id, code) values
               (${userId}, ${url}, ${folderId}, ${randStr})
          """}) flatMap { findById(_) }
